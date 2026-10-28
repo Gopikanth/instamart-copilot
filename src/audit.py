@@ -1,0 +1,15 @@
+import pandas as pd
+customers =pd.read_csv(("data/raw/customers.csv"))
+print(customers.shape)
+print(customers.tail(3))
+print(customers['customer_id'].nunique())
+print(customers.duplicated().sum())
+print(customers.isna().sum())
+print(customers.isna().mean()*100 .__round__(2))
+bad_age = customers[(customers['age']<10)|(customers['age']>100)]
+print(len(bad_age))
+print(bad_age)
+print(customers['city'].nunique())
+print(customers['city'].unique())
+print(customers['gender'].nunique())
+print(customers['gender'].unique())
