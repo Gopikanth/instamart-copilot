@@ -1,3 +1,5 @@
+import os
+
 import pandas as pd
 customers = pd.read_csv("data/raw/customers.csv")
 customers["city"] = customers['city'].str.strip().str.title()
@@ -54,3 +56,12 @@ print(orders.loc[completed, "delivery_minutes"].isna().sum())
 print(orders.loc[orders["status"] == "cancelled", "delivery_minutes"].isna().sum())
 print(orders.shape)
 print(orders["status"].value_counts())
+print(orders.columns.tolist())
+orders = orders[["order_id", "customer_id", "product_id", "quantity", "order_ts",
+                 "status", "discount_pct", "order_amount", "delivery_minutes"]]
+print(orders.shape)
+os.makedirs("data/clean", exist_ok=True)
+customers.to_csv("data/clean/customers.csv", index=False)
+products.to_csv("data/clean/products.csv", index=False)
+orders.to_csv("data/clean/orders.csv", index=False)
+print(pd.read_csv("data/clean/customers.csv").shape)
