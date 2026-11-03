@@ -1,0 +1,13 @@
+import pandas as pd
+import sqlite3
+
+conn = sqlite3.connect("data/instamart.db")
+text = open("sql/queries.sql").read()
+queries = [q.strip() for q in text.split(";") if q.strip()]
+
+for i, q in enumerate(queries, start=1):
+    result = pd.read_sql_query(q, conn)
+    print(f"Q{i}: {len(result)} rows")
+    print(result.head())
+
+conn.close()
