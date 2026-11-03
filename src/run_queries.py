@@ -15,5 +15,8 @@ q2 = pd.read_sql_query(queries[1], conn)
 print(round(q2["revenue"].sum(), 2))
 
 print(pd.read_sql_query("SELECT AVG(price_inr) AS avg_price FROM products", conn))
+q6 = pd.read_sql_query(queries[5], conn)
+print(q6[q6["row_num"] == 1])
+print((q6["rnk"] != q6["row_num"]).sum())
 
 conn.close()

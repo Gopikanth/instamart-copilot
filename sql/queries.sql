@@ -58,3 +58,21 @@ FROM customer_spend AS cs
 CROSS JOIN avg_spend AS a
 WHERE cs.total_spend > a.avg_total
 ORDER BY cs.total_spend DESC;
+-- Q6: rank customers by spend within each city
+WITH spend AS (
+    SELECT c.customer_id,
+           c.city,
+           ROUND(SUM(o.order_amount), 2) AS total_spend
+    FROM orders AS o
+    JOIN customers AS c ON o.customer_id = c.customer_id
+    WHERE o.status = 'completed'
+    GROUP BY c.customer_id, c.city
+)
+SELECT customer_id,
+       city,
+       total_spend,
+       RANK()       OVER (PARTITION BY city ORDER BY total_spend DESC) AS rnk,
+       DENSE_RANK() OVER (PARTITION BY city ORDER BY total_spend DESC) AS dense_rnk,
+       ROW_NUMBER() OVER (PARTITION BY city ORDER BY total_spend DESC) AS row_num
+FROM spend
+ORDER BY city, row_num;
