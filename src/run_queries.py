@@ -14,4 +14,6 @@ for i, q in enumerate(queries, start=1):
 q2 = pd.read_sql_query(queries[1], conn)
 print(round(q2["revenue"].sum(), 2))
 
+print(pd.read_sql_query("SELECT AVG(price_inr) AS avg_price FROM products", conn))
+
 conn.close()

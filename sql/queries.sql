@@ -18,3 +18,12 @@ JOIN products AS p ON o.product_id = p.product_id
 WHERE o.status = 'completed'
 GROUP BY c.city, p.category
 ORDER BY revenue DESC;
+
+-- Q3: products priced above the average catalogue price
+SELECT product_id,
+       product_name,
+       category,
+       price_inr
+FROM products
+WHERE price_inr > (SELECT AVG(price_inr) FROM products)
+ORDER BY price_inr DESC;
