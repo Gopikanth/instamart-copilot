@@ -27,3 +27,14 @@ SELECT product_id,
 FROM products
 WHERE price_inr > (SELECT AVG(price_inr) FROM products)
 ORDER BY price_inr DESC;
+
+-- Q4: customers with no completed order
+SELECT c.customer_id,
+       c.city,
+       c.signup_date
+FROM customers AS c
+LEFT JOIN orders AS o
+       ON o.customer_id = c.customer_id
+      AND o.status = 'completed'
+WHERE o.order_id IS NULL
+ORDER BY c.customer_id;
