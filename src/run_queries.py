@@ -10,4 +10,8 @@ for i, q in enumerate(queries, start=1):
     print(f"Q{i}: {len(result)} rows")
     print(result.head())
 
+
+q2 = pd.read_sql_query(queries[1], conn)
+print(round(q2["revenue"].sum(), 2))
+
 conn.close()
