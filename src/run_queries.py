@@ -19,4 +19,7 @@ q6 = pd.read_sql_query(queries[5], conn)
 print(q6[q6["row_num"] == 1])
 print((q6["rnk"] != q6["row_num"]).sum())
 
+q7 = pd.read_sql_query(queries[6], conn)
+print(q7.tail(2))
+
 conn.close()
