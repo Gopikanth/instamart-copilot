@@ -73,3 +73,44 @@ i = num_cols.index("frequency")
 print(round(scaler.mean_[i], 3), round(data["frequency"].mean(), 3))
 print(X_feat.isna().sum().sum())
 assert X_feat.isna().sum().sum() == 0, "missing values found"
+
+from lapse_data import X_train, X_test, y_train, y_test, cat_cols, num_cols
+
+from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.pipeline import Pipeline
+from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import GridSearchCV
+from sklearn.metrics import confusion_matrix, precision_score, recall_score, f1_score
+
+
+def make_pre():
+    return ColumnTransformer([
+        ("cat", OneHotEncoder(drop="first", handle_unknown="ignore"), cat_cols),
+        ("num", StandardScaler(), num_cols),
+    ])
+
+
+lr_grid = GridSearchCV(
+    Pipeline([("pre", make_pre()), ("model", LogisticRegression(max_iter=1000))]),
+    param_grid={"model__C": [0.01, 0.1, 1, 10, 100]},
+    cv=5, scoring="f1",
+).fit(X_train, y_train)
+print("LR best:", lr_grid.best_params_, round(lr_grid.best_score_, 3))
+
+rf_grid = GridSearchCV(
+    Pipeline([("pre", make_pre()),
+              ("model", RandomForestClassifier(n_estimators=100, random_state=42))]),
+    param_grid={"model__max_depth": [3, 5, 8], "model__min_samples_leaf": [5, 10, 20]},
+    cv=5, scoring="f1",
+).fit(X_train, y_train)
+print("RF best:", rf_grid.best_params_, round(rf_grid.best_score_, 3))
+
+for name, grid in [("Logistic regression", lr_grid), ("Random forest", rf_grid)]:
+    pred = grid.predict(X_test)
+    print(name)
+    print(confusion_matrix(y_test, pred))
+    print("precision", round(precision_score(y_test, pred, zero_division=0), 3),
+          "recall", round(recall_score(y_test, pred, zero_division=0), 3),
+          "F1", round(f1_score(y_test, pred, zero_division=0), 3))

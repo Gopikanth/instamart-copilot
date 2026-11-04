@@ -139,6 +139,10 @@ Correlations are weak. The largest in absolute value is order_amount with discou
 
 Part B
 
+### Model choice
+
+I select the logistic regression. Both tuned models reach almost the same test F1 (about 0.72), but logistic regression catches more of the customers who really lapse (recall 0.81 versus 0.76). Missing a customer who is about to lapse loses all their future revenue, while wrongly targeting a loyal customer only wastes a small discount, so recall is worth more than a few points of precision. Logistic regression is also simpler to explain to the retention team through its coefficients.
+
 To be completed.
 
 Part C
