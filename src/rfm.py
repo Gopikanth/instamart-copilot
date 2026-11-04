@@ -36,3 +36,34 @@ for k in range(2, 9):
 
 table = pd.DataFrame(rows, columns=["K", "inertia", "silhouette"])
 print(table.to_string(index=False))
+
+import os
+
+kmeans = KMeans(n_clusters=4, n_init=10, random_state=42).fit(X)
+rfm["segment_id"] = kmeans.labels_
+
+profile = rfm.groupby("segment_id").agg(
+    size=("customer_id", "count"),
+    mean_recency=("recency", "mean"),
+    mean_frequency=("frequency", "mean"),
+    mean_monetary=("monetary", "mean"),
+).round(1)
+print(profile)
+
+names = {0: "Casual Buyers", 1: "Premium Big Spenders",
+         2: "Loyal Regulars", 3: "Lapsing Customers"}
+rfm["segment_name"] = rfm["segment_id"].map(names)
+
+premium_id = profile["mean_monetary"].idxmax()
+rfm["is_premium"] = rfm["segment_id"] == premium_id
+
+os.makedirs("outputs", exist_ok=True)
+rfm[["customer_id", "recency", "frequency", "monetary",
+     "segment_id", "segment_name", "is_premium"]].to_csv("outputs/customer_segments.csv", index=False)
+print(rfm["is_premium"].sum(), rfm.loc[rfm["is_premium"], "segment_name"].unique())
+
+from sklearn.decomposition import PCA
+
+pca = PCA(n_components=2).fit(X)
+print(pca.explained_variance_ratio_.round(3))
+print(round(pca.explained_variance_ratio_.sum(), 3))
