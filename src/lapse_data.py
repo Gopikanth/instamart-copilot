@@ -50,3 +50,26 @@ print(len(X_train), len(X_test))
 
 baseline = [0] * len(y_test)
 print(round(accuracy_score(y_test, baseline), 3), f1_score(y_test, baseline, zero_division=0))
+
+from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
+
+cat_cols = ["city", "gender", "fav_category"]
+num_cols = [c for c in X_feat.columns if c not in cat_cols]
+
+preprocessor = ColumnTransformer([
+    ("cat", OneHotEncoder(drop="first", handle_unknown="ignore"), cat_cols),
+    ("num", StandardScaler(), num_cols),
+])
+
+preprocessor.fit(X_train)
+X_train_t = preprocessor.transform(X_train)
+X_test_t = preprocessor.transform(X_test)
+print(num_cols)
+print(X_train_t.shape, X_test_t.shape)
+
+scaler = preprocessor.named_transformers_["num"]
+i = num_cols.index("frequency")
+print(round(scaler.mean_[i], 3), round(data["frequency"].mean(), 3))
+print(X_feat.isna().sum().sum())
+assert X_feat.isna().sum().sum() == 0, "missing values found"
