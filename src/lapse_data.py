@@ -114,3 +114,25 @@ for name, grid in [("Logistic regression", lr_grid), ("Random forest", rf_grid)]
     print("precision", round(precision_score(y_test, pred, zero_division=0), 3),
           "recall", round(recall_score(y_test, pred, zero_division=0), 3),
           "F1", round(f1_score(y_test, pred, zero_division=0), 3))
+import pandas as pd
+from sklearn.base import clone
+
+minority = X_train[y_train == 1]
+n_extra = (y_train == 0).sum() - (y_train == 1).sum()
+extra = minority.sample(n=n_extra, replace=True, random_state=42)
+
+X_bal = pd.concat([X_train, extra])
+y_bal = pd.concat([y_train, pd.Series(1, index=extra.index)])
+print(len(X_bal), y_bal.value_counts().to_dict())
+
+balanced_lr = clone(lr_grid.best_estimator_).fit(X_bal, y_bal)
+
+def scores(model):
+    pred = model.predict(X_test)
+    return (round(precision_score(y_test, pred, zero_division=0), 3),
+            round(recall_score(y_test, pred, zero_division=0), 3),
+            round(f1_score(y_test, pred, zero_division=0), 3))
+
+print("original  precision, recall, F1:", scores(lr_grid))
+print("balanced  precision, recall, F1:", scores(balanced_lr))
+print(confusion_matrix(y_test, balanced_lr.predict(X_test)))

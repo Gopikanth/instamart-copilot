@@ -143,6 +143,8 @@ Part B
 
 I select the logistic regression. Both tuned models reach almost the same test F1 (about 0.72), but logistic regression catches more of the customers who really lapse (recall 0.81 versus 0.76). Missing a customer who is about to lapse loses all their future revenue, while wrongly targeting a loyal customer only wastes a small discount, so recall is worth more than a few points of precision. Logistic regression is also simpler to explain to the retention team through its coefficients.
 
+Recall moved the most, from 0.81 to 0.91, while precision fell from 0.66 to 0.59 and F1 stayed about the same. For the retention team, balancing means catching more of the customers who are about to lapse, at the cost of contacting more loyal customers by mistake. That is worth it when a retention offer is cheap compared with the value of a lost customer
+
 To be completed.
 
 Part C
