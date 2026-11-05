@@ -3,7 +3,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pandas as pd
 import re
-from mock_llm import est_tokens
+from mock_llm import est_tokens, reset, chat
 
 MAX_INPUT_TOKENS = 400
 
@@ -38,3 +38,29 @@ print(counts, sum(counts.values()))
 left = sum(len(re.findall(p, t)) for t in tickets["redacted"] for _, p, _ in PATTERNS)
 print(left)
 assert left == 0, "personal information is still present"
+
+ZERO_SHOT = ('CLASSIFY the support ticket into one category: billing, delivery, technical or fraud. '
+             'Reply with JSON only: {"category": "...", "reason": "..."}')
+
+FEW_SHOT = ZERO_SHOT + """
+EXAMPLES:
+Ticket: I was charged twice for one order. -> {"category": "billing", "reason": "double charge"}
+Ticket: The rider has not arrived yet. -> {"category": "delivery", "reason": "late rider"}
+Ticket: The app crashes when I log in. -> {"category": "technical", "reason": "app crash"}
+Ticket: Someone used my card without permission. -> {"category": "fraud", "reason": "unauthorized use"}"""
+
+CATEGORIES = ["billing", "delivery", "technical", "fraud"]
+for prompt in (ZERO_SHOT, FEW_SHOT):
+    assert "CLASSIFY" in prompt
+    assert all(c in prompt for c in CATEGORIES)
+assert "EXAMPLES:" not in ZERO_SHOT
+assert "EXAMPLES:" in FEW_SHOT
+print(est_tokens(ZERO_SHOT), est_tokens(FEW_SHOT))
+reset()
+sample = tickets.loc[0, "redacted"]
+response = chat([
+    {"role": "system", "content": ZERO_SHOT},
+    {"role": "user", "content": sample},
+])
+print(response.choices[0].message.content)
+print(response.usage.total_tokens)
