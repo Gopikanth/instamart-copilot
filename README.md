@@ -145,6 +145,8 @@ I select the logistic regression. Both tuned models reach almost the same test F
 
 Recall moved the most, from 0.81 to 0.91, while precision fell from 0.66 to 0.59 and F1 stayed about the same. For the retention team, balancing means catching more of the customers who are about to lapse, at the cost of contacting more loyal customers by mistake. That is worth it when a retention offer is cheap compared with the value of a lost customer
 
+The retention list is illustrative and not a leakage-free evaluation, because the Premium flag comes from RFM over the whole window, which includes the September period that defines the lapse label.
+
 To be completed.
 
 Part C

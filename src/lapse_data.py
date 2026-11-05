@@ -136,3 +136,43 @@ def scores(model):
 print("original  precision, recall, F1:", scores(lr_grid))
 print("balanced  precision, recall, F1:", scores(balanced_lr))
 print(confusion_matrix(y_test, balanced_lr.predict(X_test)))
+
+rf_best = rf_grid.best_estimator_
+importance = pd.Series(
+    rf_best.named_steps["model"].feature_importances_,
+    index=rf_best.named_steps["pre"].get_feature_names_out(),
+).sort_values(ascending=False)
+print(importance.head(5).round(3))
+
+lr_best = lr_grid.best_estimator_
+coefs = pd.Series(
+    lr_best.named_steps["model"].coef_[0],
+    index=lr_best.named_steps["pre"].get_feature_names_out(),
+)
+print(coefs[["num__frequency", "cat__fav_category_Electronics", "num__cancel_rate"]].round(3))
+import os
+import joblib
+
+os.makedirs("outputs", exist_ok=True)
+selected = lr_grid.best_estimator_
+joblib.dump(selected, "outputs/lapse_model.joblib")
+
+reloaded = joblib.load("outputs/lapse_model.joblib")
+print((reloaded.predict(X_test) == selected.predict(X_test)).all())
+
+segments = pd.read_csv("outputs/customer_segments.csv")
+
+test = data.loc[X_test.index, ["customer_id", "lapsed"]].copy()
+test["lapse_probability"] = reloaded.predict_proba(X_test)[:, 1]
+test = test.merge(segments[["customer_id", "is_premium"]], on="customer_id", how="left")
+
+premium_test = test[test["is_premium"] == True]
+top = premium_test.sort_values("lapse_probability", ascending=False).head(10)
+
+retention = top.rename(columns={"lapsed": "actually_lapsed"})[
+    ["customer_id", "lapse_probability", "actually_lapsed"]]
+retention["lapse_probability"] = retention["lapse_probability"].round(4)
+retention.to_csv("outputs/retention_list.csv", index=False)
+
+print(len(premium_test), retention["actually_lapsed"].sum())
+print(retention)
