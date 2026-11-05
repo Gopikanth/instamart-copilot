@@ -1,9 +1,12 @@
 import os
+import random
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pandas as pd
 import re
-from mock_llm import est_tokens, reset, chat
+import time
+import random
+from mock_llm import est_tokens, reset, chat, TransientLLMError
 
 MAX_INPUT_TOKENS = 400
 
@@ -64,3 +67,39 @@ response = chat([
 ])
 print(response.choices[0].message.content)
 print(response.usage.total_tokens)
+
+BASE_DELAY = 0.05
+MAX_RETRIES = 3
+
+retry_stats = {"errors": 0}
+waits = []
+
+
+def call_with_retry(messages, ticket_id):
+    for attempt in range(MAX_RETRIES + 1):
+        try:
+            return chat(messages)
+        except TransientLLMError:
+            retry_stats["errors"] += 1
+            if attempt == MAX_RETRIES:
+                raise
+            wait = BASE_DELAY * 2 ** attempt * random.uniform(0.9, 1.15)
+            low = BASE_DELAY * 2 ** attempt * 0.9
+            high = BASE_DELAY * 2 ** attempt * 1.15
+            assert low <= wait <= high, "wait outside the allowed jitter range"
+            waits.append(wait)
+            print(f"retry {attempt} for {ticket_id}: waiting {wait:.4f}s")
+            time.sleep(wait)
+random.seed(42)
+reset()
+
+done = 0
+for _, row in tickets[~is_empty & ~is_long].iterrows():
+    call_with_retry(
+        [{"role": "system", "content": ZERO_SHOT},
+         {"role": "user", "content": row["redacted"]}],
+        row["ticket_id"],
+    )
+    done += 1
+
+print(done, retry_stats["errors"], len(waits), round(min(waits), 4), round(max(waits), 4))
