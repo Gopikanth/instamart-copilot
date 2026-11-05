@@ -1,7 +1,8 @@
 import os
 import sys
 from collections import Counter
-
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 POLICY_DIR = "data/policies"
@@ -36,3 +37,23 @@ def build_chunks(size=CHUNK_SIZE, overlap=OVERLAP):
 chunks = build_chunks()
 print(len(chunks))
 print(Counter(c["source"] for c in chunks))
+
+def make_retriever(chunk_list):
+    vectorizer = TfidfVectorizer()
+    matrix = vectorizer.fit_transform([c["text"] for c in chunk_list])
+
+    def retrieve(query, k=3):
+        q = vectorizer.transform([query])
+        scores = cosine_similarity(q, matrix)[0]
+        top = scores.argsort()[::-1][:k]
+        return [{"source": chunk_list[i]["source"],
+                 "score": float(scores[i]),
+                 "text": chunk_list[i]["text"]} for i in top]
+
+    return retrieve, matrix
+
+
+retrieve, matrix = make_retriever(chunks)
+print(matrix.shape)
+for r in retrieve("refund policy late delivery"):
+    print(r["source"], round(r["score"], 3), r["text"][:60])
