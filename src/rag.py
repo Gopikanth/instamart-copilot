@@ -4,6 +4,8 @@ from collections import Counter
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from mock_llm import chat
+
 
 POLICY_DIR = "data/policies"
 CHUNK_SIZE = 40
@@ -57,3 +59,32 @@ retrieve, matrix = make_retriever(chunks)
 print(matrix.shape)
 for r in retrieve("refund policy late delivery"):
     print(r["source"], round(r["score"], 3), r["text"][:60])
+
+SYSTEM_PROMPT = ("You are a POLICY ASSISTANT. Answer ONLY from the supplied CONTEXT. "
+                 "If the context does not contain the answer, say that you could not "
+                 "find the information in the policy documents.")
+
+
+def build_user_message(question, results):
+    parts = ["CONTEXT:"]
+    for r in results:
+        parts.append(f"[{r['source']}]")
+        parts.append(r["text"])
+    parts.append("QUESTION:")
+    parts.append(question)
+    return "\n".join(parts)
+
+
+def answer(question, retriever=None):
+    retriever = retriever or retrieve
+    results = retriever(question, k=3)
+    response = chat([
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": build_user_message(question, results)},
+    ])
+    return {"answer": response.choices[0].message.content,
+            "sources": [r["source"] for r in results]}
+
+
+print(answer("What delivery time makes a completed order eligible for a full refund?"))
+print(answer("What is the capital of France?"))
