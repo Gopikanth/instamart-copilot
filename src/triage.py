@@ -174,3 +174,49 @@ few_results, few_total = run_pipeline(FEW_SHOT)
 few_classified = summarize("few-shot", few_results, few_total)
 
 print(pd.crosstab(zero_classified["true_category"], zero_classified["category"]))
+
+segments = pd.read_csv("outputs/customer_segments.csv")
+premium = dict(zip(segments["customer_id"], segments["is_premium"]))
+segment_name = dict(zip(segments["customer_id"], segments["segment_name"]))
+
+HUMAN_STATUSES = {"skipped_empty", "flagged_long", "flagged_invalid_output", "budget_exhausted"}
+
+
+def route_ticket(status, category, is_premium):
+    if status in HUMAN_STATUSES:
+        return "human_review", "NORMAL"
+    if category == "fraud":
+        return "security_team", "HIGH"
+    if is_premium:
+        return "premium_desk", "HIGH"
+    return "support_queue", "NORMAL"
+
+
+def finish(results):
+    out = results.copy()
+    out["segment_name"] = out["customer_id"].map(segment_name)
+    decisions = [route_ticket(s, c, bool(premium.get(cid, False)))
+                 for s, c, cid in zip(out["status"], out["category"], out["customer_id"])]
+    out["route"] = [d[0] for d in decisions]
+    out["priority"] = [d[1] for d in decisions]
+    return out[["ticket_id", "customer_id", "status", "category",
+                "segment_name", "priority", "route", "tokens_used"]]
+
+os.makedirs("outputs", exist_ok=True)
+
+TOKEN_BUDGET_DEMO = 6000
+demo_results, demo_total = run_pipeline(ZERO_SHOT, token_budget=TOKEN_BUDGET_DEMO)
+demo = finish(demo_results)
+demo.to_csv("outputs/triage_budget_demo.csv", index=False)
+print("budget", TOKEN_BUDGET_DEMO, "tokens used", demo_total,
+      "exhausted", (demo["status"] == "budget_exhausted").sum())
+
+final_results, final_total = run_pipeline(FEW_SHOT, token_budget=100000)
+final = finish(final_results)
+final.to_csv("outputs/triage_results.csv", index=False)
+print(len(final))
+print(final["route"].value_counts())
+print(final["status"].value_counts())
+
+assert (final.loc[final["category"] == "fraud", "route"] == "security_team").all()
+assert (final.loc[final["status"].isin(HUMAN_STATUSES), "route"] == "human_review").all()
