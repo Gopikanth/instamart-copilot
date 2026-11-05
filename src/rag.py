@@ -1,18 +1,23 @@
 import os
 import sys
 from collections import Counter
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from mock_llm import chat
 
+from mock_llm import chat
 
 POLICY_DIR = "data/policies"
 CHUNK_SIZE = 40
 OVERLAP = 10
 
 
+# ---------------------------------------------------------------------
+# Task 1: chunk the policy documents (40 words, overlap 10)
+# ---------------------------------------------------------------------
 def chunk_text(text, size=CHUNK_SIZE, overlap=OVERLAP):
     words = text.split()
     step = size - overlap
@@ -37,10 +42,9 @@ def build_chunks(size=CHUNK_SIZE, overlap=OVERLAP):
     return chunks
 
 
-chunks = build_chunks()
-print(len(chunks))
-print(Counter(c["source"] for c in chunks))
-
+# ---------------------------------------------------------------------
+# Task 2: TF-IDF retrieval
+# ---------------------------------------------------------------------
 def make_retriever(chunk_list):
     vectorizer = TfidfVectorizer()
     matrix = vectorizer.fit_transform([c["text"] for c in chunk_list])
@@ -56,11 +60,13 @@ def make_retriever(chunk_list):
     return retrieve, matrix
 
 
+chunks = build_chunks()
 retrieve, matrix = make_retriever(chunks)
-print(matrix.shape)
-for r in retrieve("refund policy late delivery"):
-    print(r["source"], round(r["score"], 3), r["text"][:60])
 
+
+# ---------------------------------------------------------------------
+# Task 3: augment and answer
+# ---------------------------------------------------------------------
 SYSTEM_PROMPT = ("You are a POLICY ASSISTANT. Answer ONLY from the supplied CONTEXT. "
                  "If the context does not contain the answer, say that you could not "
                  "find the information in the policy documents.")
@@ -87,9 +93,9 @@ def answer(question, retriever=None):
             "sources": [r["source"] for r in results]}
 
 
-print(answer("What delivery time makes a completed order eligible for a full refund?"))
-print(answer("What is the capital of France?"))
-
+# ---------------------------------------------------------------------
+# Task 4: evaluate retrieval and grounding
+# ---------------------------------------------------------------------
 def evaluate(retriever, label):
     eval_df = pd.read_csv("data/raw/policy_eval.csv")
     rows = []
@@ -115,10 +121,23 @@ def evaluate(retriever, label):
     return df
 
 
-with_overlap = evaluate(retrieve, "overlap 10:")
+# The demo code below only runs when you start this file directly
+# (python src/rag.py). It does NOT run when agent.py imports retrieve().
+if __name__ == "__main__":
+    print(len(chunks))
+    print(Counter(c["source"] for c in chunks))
 
-retrieve_0, _ = make_retriever(build_chunks(40, 0))
-no_overlap = evaluate(retrieve_0, "overlap 0: ")
+    print(matrix.shape)
+    for r in retrieve("refund policy late delivery"):
+        print(r["source"], round(r["score"], 3), r["text"][:60])
 
-broken = no_overlap[(no_overlap["expected_doc"] != "NONE") & (no_overlap["grounded"] == False)]
-print(broken[["question", "answer"]].to_string())
+    print(answer("What delivery time makes a completed order eligible for a full refund?"))
+    print(answer("What is the capital of France?"))
+
+    with_overlap = evaluate(retrieve, "overlap 10:")
+
+    retrieve_0, _ = make_retriever(build_chunks(40, 0))
+    no_overlap = evaluate(retrieve_0, "overlap 0: ")
+
+    broken = no_overlap[(no_overlap["expected_doc"] != "NONE") & (no_overlap["grounded"] == False)]
+    print(broken[["question", "answer"]].to_string())
