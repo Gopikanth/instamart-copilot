@@ -139,15 +139,119 @@ Correlations are weak. The largest in absolute value is order_amount with discou
 
 Part B
 
-### Model choice
+Part B groups customers into segments and predicts which customers will lapse. It uses only completed orders for customer behaviour and reads data/clean/orders.csv and data/clean/customers.csv from Part A.
+
+Script	What it does	Output
+src/rfm.py	RFM table, K-means, segment profile, PCA	outputs/customer_segments.csv
+src/lapse_data.py	Cohort, label, features, split, preprocessing (imported by the next script)	none
+src/lapse_model.py	Tuning, evaluation, class-balance experiment, interpretation, saved model, retention list	outputs/lapse_model.joblib, outputs/retention_list.csv
+Leakage controls
+No encoder, scaler or resampler saw test rows. Encoding and scaling are fitted inside a pipeline on training data only, and the oversampling is applied to the training set only.
+No data from 2025-09-01 onwards entered the features.
+The segment labels from the K-means task were not used as features.
+Customer segments
+
+RFM per customer, from completed orders and a snapshot date of 2025-10-01: recency is the days since the last completed order, frequency is the number of distinct completed orders, and monetary is the sum of order_amount. There are 1,175 customers with at least one completed order. The three columns were scaled with StandardScaler, and K-means used n_init=10 and random_state=42.
+
+K	Inertia	Silhouette
+2	1820.8	0.465
+3	1268.2	0.445
+4	743.1	0.526
+5	617.4	0.480
+6	503.2	0.482
+7	408.5	0.416
+8	366.5	0.412
+
+I chose K = 4: the silhouette is highest there (0.526), the inertia curve has its elbow between K = 3 and K = 4, and four segments are few enough for a retention team to act on. Inertia always falls as K grows (K = 1,175 would give every customer their own cluster and an inertia of 0), so inertia alone cannot choose K.
+
+Segment	Name	Size	Mean recency (days)	Mean frequency	Mean monetary (INR)	Recommended action
+0	Casual Buyers	436	28.9	3.8	1,057.6	Nudge a second and third order with a small welcome offer
+1	Premium Big Spenders	138	24.1	6.8	7,129.7	Priority service, early access to new Electronics and loyalty perks
+2	Loyal Regulars	419	8.8	19.4	3,410.0	Keep them engaged with subscriptions and referral rewards
+3	Lapsing Customers	182	109.0	2.2	686.0	Win-back campaign with a discount
+
+Cluster numbers are only labels and carry no ordering. The Premium flag marks the segment with the highest mean monetary value (the 138-customer segment).
+
+PCA with two components on the scaled RFM matrix explains 0.634 and 0.218 of the variance, 0.852 in total, so a 2D view keeps about 85% of the information. The segments are saved in outputs/customer_segments.csv with the columns customer_id, recency, frequency, monetary, segment_id, segment_name and is_premium.
+
+Lapse prediction
+
+Problem definition. The cutoff is 2025-09-01. The cohort is every customer with at least one completed order before the cutoff: 1,156 customers. The label lapsed is 1 if the customer has no completed order from 2025-09-01 to 2025-09-30, and 0 otherwise: 443 customers lapsed (38.32%).
+
+Features (all from orders before the cutoff): recency, frequency, monetary, average discount, average delivery minutes, favourite category, cancellation rate, city, age, gender and tenure in days. There are no missing values in the features.
+
+Split. An 80/20 stratified split with random_state=42 gives 924 training and 232 test customers. The baseline that always predicts "not lapsed" has an accuracy of 0.616 and an F1 of 0.0 on the lapsed class, so it finds none of the customers who lapse.
+
+Preprocessing. One-hot encoding with drop="first" for city, gender and favourite category, and standard scaling for the numeric columns, fitted on the training rows only (19 columns after encoding). As a check, the learned mean of frequency is 8.116, from the 924 training rows, while the mean over all 1,156 cohort customers is 8.029. They differ because they are averages of different customers, which shows that the scaler never saw the test rows.
+
+Tuning and evaluation
+
+Both searches use 5-fold cross-validation with F1 on the lapsed class, and the preprocessing sits inside the pipeline, so it is refitted in every fold.
+
+Model	Grid	Best parameters	Best cross-validated F1
+Logistic regression (max_iter=1000)	C in 0.01, 0.1, 1, 10, 100	C = 0.1	0.639
+Random forest (n_estimators=100, random_state=42)	max_depth in 3, 5, 8 and min_samples_leaf in 5, 10, 20	max_depth = 3, min_samples_leaf = 20	0.669
+
+Results on the untouched test set (lapsed class), evaluated once after tuning:
+
+Model	Confusion matrix [[TN, FP], [FN, TP]]	Precision	Recall	F1
+Baseline (always "not lapsed")	n/a	0.000	0.000	0.000
+Logistic regression	[[105, 38], [17, 72]]	0.655	0.809	0.724
+Random forest	[[112, 31], [21, 68]]	0.687	0.764	0.723
+
+My numbers differ from the reference values in the brief (best C = 1, depth 8 and leaf 10) because my feature set is different, but they are of the same order and well above the required test F1 of 0.55.
+
+Model choice
 
 I select the logistic regression. Both tuned models reach almost the same test F1 (about 0.72), but logistic regression catches more of the customers who really lapse (recall 0.81 versus 0.76). Missing a customer who is about to lapse loses all their future revenue, while wrongly targeting a loyal customer only wastes a small discount, so recall is worth more than a few points of precision. Logistic regression is also simpler to explain to the retention team through its coefficients.
 
-Recall moved the most, from 0.81 to 0.91, while precision fell from 0.66 to 0.59 and F1 stayed about the same. For the retention team, balancing means catching more of the customers who are about to lapse, at the cost of contacting more loyal customers by mistake. That is worth it when a retention offer is cheap compared with the value of a lost customer
+Class-balance experiment
+
+The training set has 570 customers who did not lapse and 354 who did. I kept every original training row and added 216 randomly chosen duplicates of lapsed training rows (with replacement, random_state=42), giving 570 of each class (1,140 rows). I refitted the best logistic regression on this balanced set and evaluated on the original test set.
+
+Model	Precision	Recall	F1	Confusion matrix
+Original logistic regression	0.655	0.809	0.724	[[105, 38], [17, 72]]
+Balanced logistic regression	0.587	0.910	0.714	[[86, 57], [8, 81]]
+
+Recall moved the most, from 0.81 to 0.91, while precision fell from 0.66 to 0.59 and F1 stayed about the same. For the retention team, balancing means catching more of the customers who are about to lapse (81 of 89 instead of 72), at the cost of contacting more loyal customers by mistake (57 instead of 38). That is worth it when a retention offer is cheap compared with the value of a lost customer.
+
+Interpretation
+
+Five most important features of the best random forest:
+
+Feature	Importance	Business reading
+frequency	0.350	How often someone orders is the strongest signal; habit decides who stays
+monetary	0.243	Total spend before September matters; big spenders behave differently
+recency	0.108	Days since the last order, the classic early-warning sign
+cancel_rate	0.068	Customers who often cancel have a worse experience
+avg_discount	0.065	How much a customer relies on promotions
+
+Signs of three coefficients in the best logistic regression (the category baseline is Dairy):
+
+Feature	Coefficient	Sign	Business reading
+frequency	-1.281	negative	More orders means a lower chance of lapsing; by far the biggest effect
+fav_category_Electronics	-0.378	negative	Electronics buyers lapse less than Dairy buyers
+cancel_rate	-0.101	negative	A weak and slightly surprising sign: more cancellations do not predict lapsing here, so I would not act on it
+Saved model and retention list
+
+The selected logistic regression pipeline is saved with joblib.dump to outputs/lapse_model.joblib. Reloading it with joblib.load reproduces the original test predictions exactly (all predictions identical).
+
+There are 29 Premium customers in the test set. The top 10 by predicted lapse probability are saved in outputs/retention_list.csv (columns customer_id, lapse_probability, actually_lapsed). Of these 10, 2 truly lapsed.
+
+customer_id	lapse_probability	actually_lapsed
+C0577	0.5750	0
+C0102	0.5704	1
+C0697	0.5475	0
+C0942	0.5099	0
+C0831	0.4959	0
+C0509	0.4765	0
+C0162	0.4764	0
+C0324	0.4763	0
+C0977	0.4449	1
+C0299	0.4447	0
 
 The retention list is illustrative and not a leakage-free evaluation, because the Premium flag comes from RFM over the whole window, which includes the September period that defines the lapse label.
 
-To be completed.
 
 Part C
 
