@@ -255,7 +255,95 @@ The retention list is illustrative and not a leakage-free evaluation, because th
 
 Part C
 
-To be completed.
+Part C builds a triage pipeline around the supplied offline mock_llm.py for 164 support tickets. It is safe (input guardrails and redaction), resilient (retries with backoff), checked (every answer is validated), cost-aware (token budget) and useful (routing that uses the Part B segments). Tickets are processed in file order. Everything runs with python src/triage.py, which reads data/raw/tickets.csv and outputs/customer_segments.csv and writes outputs/triage_budget_demo.csv and outputs/triage_results.csv.
+
+Input guardrails
+
+Before any model call, a ticket whose text is empty or only whitespace gets the status skipped_empty, and a ticket whose estimated size is above MAX_INPUT_TOKENS = 400 gets flagged_long. Neither is ever sent to the model. There are 4 empty tickets and 4 long tickets (each estimated at 734 tokens), which leaves 156 eligible tickets. The file is read with keep_default_na=False, so an empty cell stays an empty string.
+
+Redaction
+
+The three patterns are applied in this order to the ticket text before it goes into a prompt: email to [EMAIL], phone (\b[6-9]\d{9}\b) to [PHONE] and order id (ORD-\d{6}) to [ORDER_ID].
+
+Type	Substitutions across all 164 tickets
+Emails	55
+Phone numbers	91
+Order ids	132
+Total	278
+
+Re-applying the three patterns to the redacted texts finds 0 matches (checked with an assertion). The user message sent to the model is exactly the redacted ticket text, and an assertion before every call checks that no email, phone number or order id appears in any message of the prompt.
+
+Prompts
+
+Both prompts contain the word CLASSIFY, list the four categories and require a JSON-only reply. The few-shot prompt adds a line EXAMPLES: followed by four labelled examples (billing, delivery, technical and fraud).
+
+Zero-shot (26 estimated tokens):
+CLASSIFY the support ticket into one category: billing, delivery, technical or fraud. Reply with JSON only: {"category": "...", "reason": "..."}
+
+Few-shot (98 estimated tokens): the zero-shot text plus
+EXAMPLES:
+Ticket: I was charged twice for one order. -> {"category": "billing", "reason": "double charge"}
+Ticket: The rider has not arrived yet. -> {"category": "delivery", "reason": "late rider"}
+Ticket: The app crashes when I log in. -> {"category": "technical", "reason": "app crash"}
+Ticket: Someone used my card without permission. -> {"category": "fraud", "reason": "unauthorized use"}
+Resilient calls
+
+Every model call goes through a retry function with at most 3 retries per ticket. The wait before retry number n is BASE_DELAY * 2**n * random.uniform(0.9, 1.15) with BASE_DELAY = 0.05 seconds, and one log line is printed per retry with the ticket id, the retry number and the wait. mock_llm.reset() is called immediately before each full run. A full run over the 156 eligible tickets produces 19 TransientLLMErrors; all 19 were recovered by a retry, and no ticket ended with a permanent error. With this mock every retry is retry number 0, and the 19 waits lie between 0.0453 and 0.0562 seconds, inside the allowed range of 0.045 to 0.0575.
+
+Output validation
+
+A reply is parsed as JSON and accepted if category is one of the four allowed values (classified_json). If it is not valid JSON, the lowercase words are extracted with re.findall(r"[a-z]+", text.lower()) and the reply is accepted if exactly one allowed category word is present (classified_keyword). In every other case, including valid JSON with a category outside the list, the status is flagged_invalid_output and the ticket goes to human review. Nothing is guessed. The extraction uses re.findall rather than a whitespace split, because billing-related must give the words billing and related; a plain split would give 135 / 0 / 21 instead of 135 / 12 / 9.
+
+Status (one full run over 164 tickets)	Count
+classified_json	135
+classified_keyword	12
+flagged_invalid_output	9
+skipped_empty	4
+flagged_long	4
+
+The 12 keyword replies are the mock's chatty answers (for example "The customer appears to have a billing-related problem."), and the 9 invalid ones are valid JSON with the category shipping.
+
+Zero-shot versus few-shot
+
+Each prompt was run once over all tickets with no token budget. Accuracy is measured against true_category over the 147 classified tickets.
+
+	Zero-shot	Few-shot
+Tickets classified	147	147
+Accuracy	85.7% (126 of 147)	100% (147 of 147)
+Total tokens	8,464	19,696
+Tokens per classified ticket	57.6	134.0
+
+Zero-shot confusion table (rows are the true category, columns the predicted category):
+
+true \ predicted	billing	delivery	fraud	technical
+billing	38	0	0	0
+delivery	0	36	0	0
+fraud	11	0	23	0
+technical	10	0	0	29
+
+Few-shot raised accuracy from 85.7% to 100% (126 to 147 of 147 classified tickets correct), but it cost 19,696 tokens instead of 8,464, which is 134 versus 58 tokens per classified ticket (about 2.3 times as much). All 21 zero-shot errors were fraud (11) or technical (10) tickets labelled billing, and a missed fraud ticket is the costly kind of mistake. So for this task the extra 76 tokens per ticket (about 535 tokens for each additional correct ticket) is worth paying. For a low-risk, high-volume task where 86% accuracy is acceptable, the cheaper zero-shot prompt would be enough.
+
+Token budget
+
+TOKEN_BUDGET works like this: before each model call, if the running total of usage.total_tokens is already at or above the budget, no call is made and the ticket gets the status budget_exhausted and goes to human review. The demo uses the zero-shot prompt with TOKEN_BUDGET = 6000 and is saved as outputs/triage_budget_demo.csv. The run used 6,027 tokens (slightly above the budget, because the check happens before each call) and 45 tickets ended as budget_exhausted. The count depends on the prompt length.
+
+Routing and final output
+
+The final outputs/triage_results.csv (164 rows; columns ticket_id, customer_id, status, category, segment_name, priority, route, tokens_used) comes from a few-shot run with TOKEN_BUDGET = 100000. It uses outputs/customer_segments.csv from Part B for the Premium flag; a customer with no row in that file counts as not premium.
+
+Rule, in this order	Route	Priority
+Status is skipped_empty, flagged_long, flagged_invalid_output or budget_exhausted	human_review	NORMAL
+Category is fraud	security_team	HIGH
+Customer is Premium	premium_desk	HIGH
+Otherwise	support_queue	NORMAL
+Route	Tickets
+support_queue	102
+security_team	34
+human_review	17
+premium_desk	11
+
+Rule-validated and human-reviewed. 147 tickets (135 classified_json and 12 classified_keyword) were classified and passed the validation rules, and were routed automatically. 17 tickets went to humans: 4 empty, 4 too long and 9 whose output could not be validated. In the budget demo, 45 further tickets would have gone to humans because the budget ran out.
+
 
 Part D
 
@@ -263,4 +351,8 @@ To be completed.
 
 Limitations and Next Steps
 
-To be completed.
+The retention list is illustrative and not a leakage-free evaluation. The Premium flag is a post-hoc whole-window label computed from RFM over all orders, including the September window that defines the lapse label. The model's own features use only orders before the cutoff.
+The lapse model is trained and tested on a small cohort (1,156 customers, 232 in the test set, 29 Premium customers), with a single cutoff date, so the metrics are noisy.
+The mock model is deterministic and keyword-based, so the zero-shot and few-shot accuracies say little about how a real LLM would behave. The few-shot result of 100% reflects how the mock treats the EXAMPLES: marker.
+Redaction only covers the three required patterns (email, phone, order id). Names, addresses and card numbers in free text would not be removed.
+Long tickets are flagged for a human and not truncated or summarised, and token counts are estimates (words x 1.3), not real billing tokens.
