@@ -1,6 +1,7 @@
 import os
 import sys
 from collections import Counter
+import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -88,3 +89,36 @@ def answer(question, retriever=None):
 
 print(answer("What delivery time makes a completed order eligible for a full refund?"))
 print(answer("What is the capital of France?"))
+
+def evaluate(retriever, label):
+    eval_df = pd.read_csv("data/raw/policy_eval.csv")
+    rows = []
+    for _, r in eval_df.iterrows():
+        result = answer(r["question"], retriever)
+        if r["expected_doc"] == "NONE":
+            hit = grounded = None
+            fallback = result["answer"].startswith("I could not find")
+        else:
+            hit = r["expected_doc"] in result["sources"]
+            grounded = r["expected_fact"] in result["answer"]
+            fallback = None
+        rows.append({"question": r["question"], "expected_doc": r["expected_doc"],
+                     "retrieval_hit": hit, "grounded": grounded,
+                     "fallback": fallback, "answer": result["answer"]})
+    df = pd.DataFrame(rows)
+    answerable = df[df["expected_doc"] != "NONE"]
+    unanswerable = df[df["expected_doc"] == "NONE"]
+    print(label,
+          answerable["retrieval_hit"].sum(), "/", len(answerable),
+          answerable["grounded"].sum(), "/", len(answerable),
+          unanswerable["fallback"].sum(), "/", len(unanswerable))
+    return df
+
+
+with_overlap = evaluate(retrieve, "overlap 10:")
+
+retrieve_0, _ = make_retriever(build_chunks(40, 0))
+no_overlap = evaluate(retrieve_0, "overlap 0: ")
+
+broken = no_overlap[(no_overlap["expected_doc"] != "NONE") & (no_overlap["grounded"] == False)]
+print(broken[["question", "answer"]].to_string())
