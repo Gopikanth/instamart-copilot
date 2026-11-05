@@ -1,13 +1,20 @@
 import os
-import random
 import sys
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-import pandas as pd
+
+import json
+import random
 import re
 import time
-import random
-from mock_llm import est_tokens, reset, chat, TransientLLMError
 
+import pandas as pd
+
+from mock_llm import est_tokens, chat, reset, TransientLLMError
+
+# =====================================================================
+# Task 1: load the tickets and apply the input guardrails
+# =====================================================================
 MAX_INPUT_TOKENS = 400
 
 tickets = pd.read_csv("data/raw/tickets.csv", keep_default_na=False)
@@ -19,6 +26,9 @@ is_long = tickets["est_tokens"] > MAX_INPUT_TOKENS
 print(len(tickets), is_empty.sum(), is_long.sum(), tickets.loc[is_long, "est_tokens"].unique())
 print((~is_empty & ~is_long).sum())
 
+# =====================================================================
+# Task 2: redact personal information (order matters: email, phone, order id)
+# =====================================================================
 PATTERNS = [
     ("EMAIL", r"[\w.+-]+@[\w-]+\.[\w.]+", "[EMAIL]"),
     ("PHONE", r"\b[6-9]\d{9}\b", "[PHONE]"),
@@ -42,6 +52,9 @@ left = sum(len(re.findall(p, t)) for t in tickets["redacted"] for _, p, _ in PAT
 print(left)
 assert left == 0, "personal information is still present"
 
+# =====================================================================
+# Task 3: the two prompts
+# =====================================================================
 ZERO_SHOT = ('CLASSIFY the support ticket into one category: billing, delivery, technical or fraud. '
              'Reply with JSON only: {"category": "...", "reason": "..."}')
 
@@ -59,15 +72,10 @@ for prompt in (ZERO_SHOT, FEW_SHOT):
 assert "EXAMPLES:" not in ZERO_SHOT
 assert "EXAMPLES:" in FEW_SHOT
 print(est_tokens(ZERO_SHOT), est_tokens(FEW_SHOT))
-reset()
-sample = tickets.loc[0, "redacted"]
-response = chat([
-    {"role": "system", "content": ZERO_SHOT},
-    {"role": "user", "content": sample},
-])
-print(response.choices[0].message.content)
-print(response.usage.total_tokens)
 
+# =====================================================================
+# Task 4: resilient calls (retry with exponential backoff and jitter)
+# =====================================================================
 BASE_DELAY = 0.05
 MAX_RETRIES = 3
 
@@ -90,16 +98,63 @@ def call_with_retry(messages, ticket_id):
             waits.append(wait)
             print(f"retry {attempt} for {ticket_id}: waiting {wait:.4f}s")
             time.sleep(wait)
-random.seed(42)
-reset()
 
-done = 0
-for _, row in tickets[~is_empty & ~is_long].iterrows():
-    call_with_retry(
-        [{"role": "system", "content": ZERO_SHOT},
-         {"role": "user", "content": row["redacted"]}],
-        row["ticket_id"],
-    )
-    done += 1
 
-print(done, retry_stats["errors"], len(waits), round(min(waits), 4), round(max(waits), 4))
+# =====================================================================
+# Task 5: validate every answer (never guess)
+# =====================================================================
+def validate_reply(text):
+    """Return (status, category). Accept only what can be checked."""
+    try:
+        data = json.loads(text)
+        category = data.get("category") if isinstance(data, dict) else None
+        if category in CATEGORIES:
+            return "classified_json", category
+        return "flagged_invalid_output", None          # valid JSON, but not an allowed category
+    except (json.JSONDecodeError, TypeError):
+        words = set(re.findall(r"[a-z]+", str(text).lower()))
+        found = [c for c in CATEGORIES if c in words]
+        if len(found) == 1:                              # exactly one allowed category word
+            return "classified_keyword", found[0]
+        return "flagged_invalid_output", None
+
+
+# =====================================================================
+# The pipeline: guardrails -> redaction -> model call (with retries) -> validation
+# =====================================================================
+def run_pipeline(system_prompt, token_budget=None):
+    random.seed(42)
+    reset()                                              # immediately before each full run
+    retry_stats["errors"] = 0
+    waits.clear()
+
+    rows = []
+    total_tokens = 0
+    for i, row in tickets.iterrows():                    # file order
+        status, category, tokens = None, None, 0
+
+        if is_empty[i]:
+            status = "skipped_empty"                     # never sent to the model
+        elif is_long[i]:
+            status = "flagged_long"                      # never sent to the model
+        elif token_budget is not None and total_tokens >= token_budget:
+            status = "budget_exhausted"                  # no call is made
+        else:
+            messages = [{"role": "system", "content": system_prompt},
+                        {"role": "user", "content": row["redacted"]}]
+            # privacy check: no email, phone or order id in anything sent to the model
+            assert not any(re.search(p, m["content"]) for m in messages for _, p, _ in PATTERNS)
+            response = call_with_retry(messages, row["ticket_id"])
+            tokens = response.usage.total_tokens
+            total_tokens += tokens
+            status, category = validate_reply(response.choices[0].message.content)
+
+        rows.append({"ticket_id": row["ticket_id"], "customer_id": row["customer_id"],
+                     "true_category": row["true_category"], "status": status,
+                     "category": category, "tokens_used": tokens})
+    return pd.DataFrame(rows), total_tokens
+
+
+results, total = run_pipeline(ZERO_SHOT)
+print(results["status"].value_counts())
+print("retries:", retry_stats["errors"], "total tokens:", total)
