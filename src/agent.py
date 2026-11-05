@@ -2,10 +2,14 @@ import json
 import os
 import sqlite3
 import sys
+import time
 from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import pandas as pd
+
+from mock_llm import chat, reset
 from rag import retrieve
 
 DB_PATH = "data/instamart.db"
@@ -96,11 +100,109 @@ TOOL_MAP = {
 }
 
 
+# ---------------------------------------------------------------------
+# Tasks 6 and 7: the ReAct loop with three safety limits
+# ---------------------------------------------------------------------
+AGENT_SYSTEM = ("You are a refund AGENT for Instamart. Use the tools to look up the order, "
+                "check the policy, compute the refund, and then issue it or escalate it to a human. "
+                "Finish with a one-line answer that starts with REFUND, ESCALATE, DENIED or NOT_FOUND, "
+                "followed by a colon.")
+
+
+def _fallback(status, steps, llm_calls, tokens_used):
+    tools_done = ", ".join(s["tool"] for s in steps) or "no tools"
+    final_answer = (f"{status}: stopped after {len(steps)} step(s) ({tools_done}). "
+                    "Handing this request over to a human agent with the steps completed so far.")
+    return {"status": status, "final_answer": final_answer, "steps": steps,
+            "llm_calls": llm_calls, "tokens_used": tokens_used}
+
+
+def run_agent(user_message, scenario_id, max_iterations=6, token_limit=6000, time_limit_seconds=10):
+    start = time.monotonic()
+    messages = [{"role": "system", "content": AGENT_SYSTEM},
+                {"role": "user", "content": user_message}]
+    steps, llm_calls, tokens_used = [], 0, 0
+
+    for _ in range(max_iterations):
+        # limit (c): wall-clock time, checked at the top of every iteration
+        if time.monotonic() - start >= time_limit_seconds:
+            return _fallback("FALLBACK_TIMEOUT", steps, llm_calls, tokens_used)
+
+        response = chat(messages, tools=TOOLS_SPEC)
+        llm_calls += 1
+        tokens_used += response.usage.total_tokens
+
+        # limit (b): tokens, checked BEFORE the requested tool is executed
+        if tokens_used > token_limit:
+            return _fallback("FALLBACK_TOKEN_LIMIT", steps, llm_calls, tokens_used)
+
+        message = response.choices[0].message
+        if not message.tool_calls:                       # no tool requested: this is the final answer
+            final_answer = message.content
+            status = final_answer.split(":", 1)[0].strip()
+            return {"status": status, "final_answer": final_answer, "steps": steps,
+                    "llm_calls": llm_calls, "tokens_used": tokens_used}
+
+        # the model asked for tool(s): record the request, run them, append the observations
+        requested = [{"id": tc.id, "name": tc.name, "arguments": tc.arguments}
+                     for tc in message.tool_calls]
+        messages.append({"role": "assistant", "content": None, "tool_calls": requested})
+        for tc in requested:
+            result = TOOL_MAP[tc["name"]](**tc["arguments"])
+            messages.append({"role": "tool", "tool_call_id": tc["id"],
+                             "name": tc["name"], "content": json.dumps(result)})
+            steps.append({"tool": tc["name"], "arguments": tc["arguments"], "observation": result})
+
+    # limit (a): max_iterations model calls without a final answer
+    return _fallback("FALLBACK_MAX_ITERATIONS", steps, llm_calls, tokens_used)
+
+
+def refund_amount(run):
+    for step in reversed(run["steps"]):
+        if step["tool"] in ("issue_refund", "escalate_to_human"):
+            return step["observation"]["refund_inr"]
+    return 0.0
+
+
+def run_all_scenarios():
+    for path in ("outputs/agent_runs.jsonl", LEDGER_PATH):      # start from a clean slate
+        if os.path.exists(path):
+            os.remove(path)
+    os.makedirs("outputs", exist_ok=True)
+    reset()
+
+    scenarios = pd.read_csv("data/raw/agent_scenarios.csv")
+    rows = []
+    for _, s in scenarios.iterrows():
+        run = run_agent(s["message"], s["scenario_id"])
+        record = {"scenario_id": s["scenario_id"], "status": run["status"],
+                  "final_answer": run["final_answer"], "llm_calls": run["llm_calls"],
+                  "tokens_used": run["tokens_used"], "steps": run["steps"]}
+        with open("outputs/agent_runs.jsonl", "a", encoding="utf-8") as f:
+            f.write(json.dumps(record) + "\n")
+        amount = refund_amount(run)
+        rows.append({"scenario_id": s["scenario_id"], "status": run["status"],
+                     "refund_inr": amount, "llm_calls": run["llm_calls"],
+                     "tokens_used": run["tokens_used"]})
+        expected = s["expected_refund_inr"]
+        assert abs(amount - expected) <= 0.01, f"{s['scenario_id']}: refund {amount} but expected {expected}"
+    table = pd.DataFrame(rows)
+    print(table.to_string(index=False))
+    return table
+
+
+def run_demos():
+    s1 = pd.read_csv("data/raw/agent_scenarios.csv").set_index("scenario_id").loc["S1", "message"]
+    token_demo = run_agent(s1, "S1", token_limit=200)
+    print("S1 with token_limit=200:", token_demo["status"],
+          "| model calls:", token_demo["llm_calls"], "| tokens:", token_demo["tokens_used"],
+          "| steps done:", len(token_demo["steps"]))
+    time_demo = run_agent(s1, "S1", time_limit_seconds=0)
+    print("S1 with time_limit_seconds=0:", time_demo["status"],
+          "| model calls:", time_demo["llm_calls"], "| steps done:", len(time_demo["steps"]))
+    print(token_demo["final_answer"])
+
+
 if __name__ == "__main__":
-    print([t["name"] for t in TOOLS_SPEC])
-    print(sorted(TOOL_MAP) == sorted(t["name"] for t in TOOLS_SPEC))
-    print(TOOL_MAP["get_order"](**{"order_id": "ORD-100048"}))
-    print(TOOL_MAP["get_order"](**{"order_id": "ORD-999999"}))
-    print(TOOL_MAP["calculate_refund"](**{"order_amount": 128.25, "delivery_minutes": 65}))
-    print(TOOL_MAP["calculate_refund"](**{"order_amount": 109.65, "delivery_minutes": 20}))
-    print(TOOL_MAP["search_policy"](**{"query": "refund policy late delivery"})["results"][0]["source"])
+    run_all_scenarios()
+    run_demos()
