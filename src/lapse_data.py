@@ -175,4 +175,6 @@ retention["lapse_probability"] = retention["lapse_probability"].round(4)
 retention.to_csv("outputs/retention_list.csv", index=False)
 
 print(len(premium_test), retention["actually_lapsed"].sum())
-print(retention)
+print(retention) 
+
+#recommit
