@@ -158,3 +158,19 @@ def run_pipeline(system_prompt, token_budget=None):
 results, total = run_pipeline(ZERO_SHOT)
 print(results["status"].value_counts())
 print("retries:", retry_stats["errors"], "total tokens:", total)
+
+def summarize(name, results, total):
+    classified = results[results["status"].isin(["classified_json", "classified_keyword"])]
+    correct = (classified["category"] == classified["true_category"]).sum()
+    print(name, len(classified), correct, round(100 * correct / len(classified), 1),
+          total, round(total / len(classified), 1))
+    return classified
+
+
+zero_results, zero_total = run_pipeline(ZERO_SHOT)
+zero_classified = summarize("zero-shot", zero_results, zero_total)
+
+few_results, few_total = run_pipeline(FEW_SHOT)
+few_classified = summarize("few-shot", few_results, few_total)
+
+print(pd.crosstab(zero_classified["true_category"], zero_classified["category"]))
