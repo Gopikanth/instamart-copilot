@@ -347,12 +347,99 @@ Rule-validated and human-reviewed. 147 tickets (135 classified_json and 12 class
 
 Part D
 
-To be completed.
+Part D has two halves. A policy assistant answers questions from the five documents in data/policies/ using retrieval, and a refund agent decides refund requests by calling tools that read data/instamart.db (Part A) and search the policies. All model calls use the supplied offline mock_llm.py.
+
+Script	What it does	Output
+src/rag.py	Chunking, TF-IDF retrieval, grounded answers, evaluation	printed results
+src/agent.py	Tools, ReAct loop, safety limits, checkpoints and resume, seven scenarios	outputs/agent_runs.jsonl, outputs/refund_ledger.jsonl, state/
+Chunking
+
+Each of the five documents is split into chunks of 40 words with an overlap of 10 words (the next chunk starts 30 words later), stopping after the first chunk that reaches the last word. Every chunk records its source file.
+
+Document	Chunks
+refund_policy.txt	4
+delivery_policy.txt	3
+escalation_policy.txt	3
+payment_policy.txt	3
+privacy_policy.txt	2
+Total	15
+Retrieval
+
+A TfidfVectorizer is fitted on the 15 chunk texts (200 distinct words). A query is transformed with the same fitted vectorizer and the chunks are ranked by cosine similarity; retrieve(query, k=3) returns dictionaries with source, score and text. For the query "refund policy late delivery" all three top chunks come from refund_policy.txt (scores 0.272, 0.251 and 0.245).
+
+TF measures how often a word appears inside a chunk, and IDF measures how rare the word is across all chunks, so common words like "the" get a small weight and rare informative words like "late" get a large one. A limitation of TF-IDF is that it only matches exact words, so a question phrased differently from the policy can retrieve the wrong chunk even though the meaning is the same. For example, "Who can see my personal data?" ranks payment_policy.txt (0.183) above privacy_policy.txt (0.116).
+
+Grounded answers
+
+answer(question) retrieves three chunks and sends two messages to the model. The system message contains POLICY ASSISTANT and tells the model to answer only from the supplied context, or to say that it could not find the information. The user message has the form CONTEXT:, then the three chunks each prefixed with [source file name] on its own line, then QUESTION: and the question. The function returns the model text and the sources used.
+
+Evaluation of retrieval and grounding
+
+data/raw/policy_eval.csv has 14 questions: 12 answerable and 2 that no document covers. A question counts as a retrieval hit if the expected document is among the top three sources, as grounded if the expected fact is a (case-sensitive) substring of the answer, and as a correct fallback if the answer begins with "I could not find".
+
+Chunking	Retrieval hit (12 answerable)	Fact in answer (12 answerable)	Fallback (2 unanswerable)
+Overlap 10 (15 chunks)	12 / 12	12 / 12	2 / 2
+Overlap 0 (13 chunks)	12 / 12	10 / 12	2 / 2
+
+With zero overlap two questions break: "What delivery time makes a completed order eligible for a full refund?" and "How soon is money returned when a payment fails but is deducted?". In both, the sentence containing the fact is cut in two by a chunk boundary ("...delivered in more than 45 minutes, the customer | receives a full refund of the order amount." and "...the amount is returned automatically | within 48 hours."), so no single chunk holds the whole sentence and the answer loses the fact ("more than 45 minutes", "48 hours"). The overlap repeats the end of each chunk at the start of the next, which keeps such sentences together.
+
+Tools
+
+TOOLS_SPEC lists five tools with a name, a one-sentence description and a JSON-style parameter specification, and the dictionary TOOL_MAP maps each tool name to its Python function. The model asks for a tool by name with an arguments dictionary, and the code looks the name up in TOOL_MAP and calls the function with those arguments.
+
+Tool	What it does
+get_order(order_id)	Reads the order from data/instamart.db (parameterised query); returns order_id, status, order_amount, delivery_minutes or {"error": "order not found"}
+search_policy(query)	Returns the retrieve output under the key results
+calculate_refund(order_amount, delivery_minutes)	Returns the full order amount if delivery took more than 45 minutes, otherwise 0
+issue_refund(order_id, refund_inr)	Appends a line (timestamp, tool, order, amount) to outputs/refund_ledger.jsonl
+escalate_to_human(order_id, refund_inr)	Appends a line in the same format to the ledger
+ReAct loop and the seven scenarios
+
+run_agent(user_message, scenario_id, max_iterations=6, token_limit=6000, time_limit_seconds=10) starts with a system message containing the word AGENT and the user message. In each iteration it calls the model; if the reply has no tool call, its content is the final answer, otherwise it appends the assistant message with tool_calls, executes the tool and appends a tool message with the JSON result. The status is the word before the colon in the final answer. Each run is appended as one JSON line to outputs/agent_runs.jsonl with every step's tool, arguments and observation.
+
+Scenario	Status	Refund amount (INR)	Model calls	Tokens used
+S1	REFUND	128.25	5	1,147
+S2	REFUND	135.00	5	1,147
+S3	ESCALATE	1,999.00	5	1,134
+S4	DENIED	0.00	4	805
+S5	DENIED	0.00	3	487
+S6	NOT_FOUND	0.00	2	172
+S7	FALLBACK_MAX_ITERATIONS	0.00	6	3,300
+
+Every refund amount equals expected_refund_inr within 0.01. S7 uses 3,300 estimated tokens, so the default token limit of 6,000 does not stop it early, and it ends after six model calls without a final answer. The ledger holds three lines: two issue_refund (S1 and S2) and one escalate_to_human (S3).
+
+Safety limits
+Limit	Rule	Status
+Iterations	max_iterations model calls without a final answer	FALLBACK_MAX_ITERATIONS (scenario S7)
+Tokens	usage.total_tokens is added after each call; if the total exceeds token_limit, stop immediately without executing the tool just requested	FALLBACK_TOKEN_LIMIT
+Time	At the top of each iteration, stop if time.monotonic() shows time_limit_seconds or more since the start	FALLBACK_TIMEOUT
+
+Every fallback returns the steps completed so far and a short human-handoff sentence in final_answer.
+
+Demonstration	Result
+S1 with token_limit=200	FALLBACK_TOKEN_LIMIT after 2 model calls and 202 tokens; 1 step had been executed (get_order) and the requested search_policy was not run
+S1 with time_limit_seconds=0	FALLBACK_TIMEOUT before the first model call (0 model calls, 0 steps)
+Checkpoints and resume
+
+After every tool observation is appended, the agent writes state/<run id>.json with the run id, scenario id, the full message list, tokens_used, the step number and the list of tools already executed. resume_agent(run_id) loads that file and continues the same loop (the time limit restarts on resume).
+
+In the demonstration, S1 raised a simulated crash right after the second tool execution (after its checkpoint was saved), and resume_agent then finished the run. The tools executed across the crash and the resume were, in order: get_order, search_policy (before the crash), then calculate_refund, issue_refund (after the resume). That is four executions with none repeated, and the final status was REFUND with INR 128.25 after 5 model calls in total. The demonstration writes to its own ledger file, outputs/refund_ledger_resume_demo.jsonl, so the main ledger never shows a second refund for S1. Run ids are random, so they differ between runs.
+
+ReAct versus plan-and-execute
+
+I compared my ReAct agent with a plan-and-execute design that asks the model for the whole step list once and replans only on error. ReAct needed 5 model calls for S1, 4 for S4, 3 for S5 and 2 for S6. S1 used 1,147 tokens, because every call re-sends the whole conversation, including the policy passages. A plan-and-execute agent would need about one planning call, and probably one more to write the answer, so it would use clearly fewer calls and tokens. That is its main advantage when calls are slow or expensive.
+
+The difference shows with unexpected observations. In S6 the order does not exist and in S5 it was cancelled. ReAct reads each observation and stops at once with NOT_FOUND after 2 calls or DENIED after 3, so no refund is calculated for an order that cannot be refunded. A fixed plan would continue into calculate_refund unless the code treats NOT_FOUND and cancelled as errors that trigger replanning, which means extra logic and an extra planning call.
+
+I would choose ReAct for this refund workflow. The route depends on what the order lookup returns (six different outcomes), money is involved, and the cost is small: about 1,100 tokens per refund. Checking limits and saving a checkpoint after every step also fits the loop naturally. I would switch to plan-and-execute if the steps were always identical and each call were costly.
 
 Limitations and Next Steps
-
 The retention list is illustrative and not a leakage-free evaluation. The Premium flag is a post-hoc whole-window label computed from RFM over all orders, including the September window that defines the lapse label. The model's own features use only orders before the cutoff.
 The lapse model is trained and tested on a small cohort (1,156 customers, 232 in the test set, 29 Premium customers), with a single cutoff date, so the metrics are noisy.
 The mock model is deterministic and keyword-based, so the zero-shot and few-shot accuracies say little about how a real LLM would behave. The few-shot result of 100% reflects how the mock treats the EXAMPLES: marker.
 Redaction only covers the three required patterns (email, phone, order id). Names, addresses and card numbers in free text would not be removed.
 Long tickets are flagged for a human and not truncated or summarised, and token counts are estimates (words x 1.3), not real billing tokens.
+TF-IDF only matches exact words, so differently phrased questions can retrieve the wrong policy chunk, and the grounded answers are limited by the mock model, which returns the best-matching sentence of the retrieved context.
+The refund agent only implements the late-delivery rule (a full refund when delivery took more than 45 minutes) and the INR 1,000 approval limit. It does not check the policy's seven-day window for raising a refund request, and it does not look at whether a refund was already paid for the same order.
+The time limit restarts when a run is resumed, and the checkpoint stores the whole message list, so long runs would give large files.
+The token counts are estimates (words x 1.3), and the ReAct versus plan-and-execute comparison uses measured ReAct numbers only; the plan-and-execute figures are estimates, since that design was not built.
