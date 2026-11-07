@@ -18,4 +18,4 @@ cancelled_blank = (orders["delivery_minutes"].isna() & (orders["status"] == "can
 assert cancelled_blank == 1199, "cancelled delivery_minutes should stay blank"
 
 
-print("ALL CHECKPOINTS PASSED")
+print("ALL CHECKPOINTS PASSED") #passed
